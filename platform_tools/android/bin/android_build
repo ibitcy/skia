@@ -1,0 +1,75 @@
+#! /bin/sh
+
+# Copyright 2018 Google Inc.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+make_gn() {
+    #TODO: make this more configurable
+    cat << EOF
+    target_cpu = "$ARCH"
+    is_debug = false
+    ndk = "$ANDROID_NDK"
+    ndk_api = 29
+    skia_use_ffmpeg = false
+    skia_enable_skottie = true
+    skia_use_system_expat = false
+    skia_use_libjpeg_turbo = true
+    skia_use_system_libjpeg_turbo = false
+    skia_use_libpng = true
+    skia_use_system_libpng = false
+    skia_use_system_zlib = false
+    skia_use_libwebp = false
+EOF
+}
+
+main() {
+    APP="$1"
+    LIB="$2"
+
+    ANDROID_NDK="$(cd "$ANDROID_NDK"; pwd)"
+    ANDROID_HOME="$(cd "$ANDROID_HOME"; pwd)"
+
+    cd "$(dirname "$0")/../../.."
+
+    python tools/git-sync-deps
+
+    for ARCH in arm arm64 x86 x64; do
+        BUILD=out/${APP}-$ARCH
+        mkdir -p "$BUILD"
+        make_gn > "${BUILD}/args.gn"
+        bin/gn gen $BUILD
+        ninja -C $BUILD $LIB
+        case $ARCH in
+            arm)    NATIVE=armeabi-v7a ;;
+            arm64)  NATIVE=arm64-v8a   ;;
+            x86)    NATIVE=x86         ;;
+            x64)    NATIVE=x86_64      ;;
+            *)      usage              ;;
+        esac
+    done
+}
+
+usage() {
+    cat >&2 <<EOM
+The environment variables ANDROID_NDK and ANDROID_HOME must be set to the
+locations of the Android NDK and SDK.  Current values:
+
+    ANDROID_NDK="$ANDROID_NDK"
+    ANDROID_HOME="$ANDROID_HOME"
+
+Additionally, \`python\` and \`ninja\` should be in your path.
+
+EOM
+    exit 1
+}
+
+[ -d "$ANDROID_NDK"  ] || usage
+[ -d "$ANDROID_HOME" ] || usage
+command -v ninja  > /dev/null || usage
+command -v python > /dev/null || usage
+
+set -x # Verbose
+set -e # Exit immediately
+
+main skia_android libskia_android.so

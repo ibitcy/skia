@@ -2288,6 +2288,40 @@ if (skia_enable_tools) {
     }
   }
 
+  test_app("skia_android") {
+    is_shared_library = is_android
+    libs = [
+    ]
+
+    deps = [
+      ":common_flags_gpu",
+      ":experimental_svg_model",
+      ":flags",
+      ":gm",
+      ":gpu_tool_utils",
+      ":skia",
+      ":tool_utils",
+      ":trace",
+      "modules/particles",
+      "modules/skottie",
+      "modules/skottie:utils",
+      "modules/sksg",
+      "modules/sksg:samples",
+      "//third_party/imgui",
+      "//third_party/freetype2",
+      "//third_party/harfbuzz",
+      "//third_party/zlib",
+      "modules/skshaper",
+      "//third_party/piex",
+      ":pathkit",
+      "//third_party/sfntly",
+    ]
+    if (skia_use_experimental_xform) {
+      deps += [ ":experimental_xform" ]
+      sources += [ "gm/xform.cpp" ]
+    }
+  }
+
   if (!skia_use_angle && (is_linux || is_win || is_mac)) {
     test_app("HelloWorld") {
       sources = [
