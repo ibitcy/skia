@@ -32,6 +32,8 @@ main() {
 
     cd "$(dirname "$0")/../../.."
 
+    rm -rf out/*
+
     python tools/git-sync-deps
 
     for ARCH in arm arm64 x86 x64; do
