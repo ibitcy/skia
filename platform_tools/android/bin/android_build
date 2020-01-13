@@ -10,7 +10,7 @@ make_gn() {
     target_cpu = "$ARCH"
     is_debug = false
     ndk = "$ANDROID_NDK"
-    ndk_api = 29
+    ndk_api = 21
     skia_use_ffmpeg = false
     skia_enable_skottie = true
     skia_use_system_expat = false
