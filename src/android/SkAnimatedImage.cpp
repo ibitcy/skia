@@ -23,7 +23,7 @@ sk_sp<SkAnimatedImage> SkAnimatedImage::Make(std::unique_ptr<SkAndroidCodec> cod
     if (!codec) {
         return nullptr;
     }
-    auto info = codec->getInfo().makeWH(scaledSize.width(), scaledSize.height());
+    auto info = codec->getInfo().makeDimensions(scaledSize);
     return Make(std::move(codec), info, cropRect, std::move(postProcess));
 }
 
@@ -40,7 +40,7 @@ sk_sp<SkAnimatedImage> SkAnimatedImage::Make(std::unique_ptr<SkAndroidCodec> cod
             || scaledSize.height() >= decodeInfo.height()) {
         // Only libwebp can decode to arbitrary smaller sizes.
         auto dims = codec->getInfo().dimensions();
-        decodeInfo = decodeInfo.makeWH(dims.width(), dims.height());
+        decodeInfo = decodeInfo.makeDimensions(dims);
     }
 
     auto image = sk_sp<SkAnimatedImage>(new SkAnimatedImage(std::move(codec), scaledSize,
@@ -329,6 +329,9 @@ int SkAnimatedImage::decodeNextFrame() {
 }
 
 void SkAnimatedImage::onDraw(SkCanvas* canvas) {
+    // This SkBitmap may be reused later to decode the following frame. But Frame::init
+    // lazily copies the pixel ref if it has any other references. So it is safe to not
+    // do a deep copy here.
     auto image = SkMakeImageFromRasterBitmap(fDisplayFrame.fBitmap,
                                              kNever_SkCopyPixelsMode);
 
@@ -356,4 +359,12 @@ void SkAnimatedImage::onDraw(SkCanvas* canvas) {
 
 void SkAnimatedImage::setRepetitionCount(int newCount) {
     fRepetitionCount = newCount;
+}
+
+sk_sp<SkImage> SkAnimatedImage::getCurrentFrame() {
+    // This SkBitmap may be reused later to decode the following frame. But Frame::init
+    // lazily copies the pixel ref if it has any other references. So it is safe to not
+    // do a deep copy here.
+    return SkMakeImageFromRasterBitmap(fDisplayFrame.fBitmap,
+                                       kNever_SkCopyPixelsMode);
 }

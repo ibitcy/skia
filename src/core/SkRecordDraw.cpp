@@ -93,8 +93,10 @@ template <> void Draw::draw(const DrawBehind& r) {
 }
 
 DRAW(SetMatrix, setMatrix(SkMatrix::Concat(fInitialCTM, r.matrix)));
+DRAW(Concat44, concat44(r.matrix.asColMajor()));
 DRAW(Concat, concat(r.matrix));
 DRAW(Translate, translate(r.dx, r.dy));
+DRAW(Scale, scale(r.sx, r.sy));
 
 DRAW(ClipPath, clipPath(r.path, r.opAA.op(), r.opAA.aa()));
 DRAW(ClipRRect, clipRRect(r.rrect, r.opAA.op(), r.opAA.aa()));
@@ -174,8 +176,7 @@ template <> void Draw::draw(const DrawDrawable& r) {
 class FillBounds : SkNoncopyable {
 public:
     FillBounds(const SkRect& cullRect, const SkRecord& record, SkRect bounds[])
-        : fNumRecords(record.count())
-        , fCullRect(cullRect)
+        : fCullRect(cullRect)
         , fBounds(bounds) {
         fCTM = SkMatrix::I();
 
@@ -183,7 +184,7 @@ public:
         fSaveStack.push_back({ 0, Bounds::MakeEmpty(), nullptr, fCTM });
     }
 
-    void cleanUp() {
+    ~FillBounds() {
         // If we have any lingering unpaired Saves, simulate restores to make
         // sure all ops in those Save blocks have their bounds calculated.
         while (!fSaveStack.isEmpty()) {
@@ -206,10 +207,6 @@ public:
 
     // In this file, SkRect are in local coordinates, Bounds are translated back to identity space.
     typedef SkRect Bounds;
-
-    int currentOp() const { return fCurrentOp; }
-    const SkMatrix& ctm() const { return fCTM; }
-    const Bounds& getBounds(int index) const { return fBounds[index]; }
 
     // Adjust rect for all paints that may affect its geometry, then map it to identity space.
     Bounds adjustAndMap(SkRect rect, const SkPaint* paint) const {
@@ -251,7 +248,9 @@ private:
     template <typename T> void updateCTM(const T&) {}
     void updateCTM(const Restore& op)   { fCTM = op.matrix; }
     void updateCTM(const SetMatrix& op) { fCTM = op.matrix; }
+    void updateCTM(const Concat44& op)  { fCTM.preConcat(op.matrix.asM33()); }
     void updateCTM(const Concat& op)    { fCTM.preConcat(op.matrix); }
+    void updateCTM(const Scale& op)     { fCTM.preScale(op.sx, op.sy); }
     void updateCTM(const Translate& op) { fCTM.preTranslate(op.dx, op.dy); }
 
     // The bounds of these ops must be calculated when we hit the Restore
@@ -263,6 +262,8 @@ private:
 
     void trackBounds(const SetMatrix&)         { this->pushControl(); }
     void trackBounds(const Concat&)            { this->pushControl(); }
+    void trackBounds(const Concat44&)          { this->pushControl(); }
+    void trackBounds(const Scale&)             { this->pushControl(); }
     void trackBounds(const Translate&)         { this->pushControl(); }
     void trackBounds(const ClipRect&)          { this->pushControl(); }
     void trackBounds(const ClipRRect&)         { this->pushControl(); }
@@ -504,8 +505,6 @@ private:
         return true;
     }
 
-    const int fNumRecords;
-
     // We do not guarantee anything for operations outside of the cull rect
     const SkRect fCullRect;
 
@@ -525,11 +524,12 @@ private:
 }  // namespace SkRecords
 
 void SkRecordFillBounds(const SkRect& cullRect, const SkRecord& record, SkRect bounds[]) {
-    SkRecords::FillBounds visitor(cullRect, record, bounds);
-    for (int curOp = 0; curOp < record.count(); curOp++) {
-        visitor.setCurrentOp(curOp);
-        record.visit(curOp, visitor);
+    {
+        SkRecords::FillBounds visitor(cullRect, record, bounds);
+        for (int i = 0; i < record.count(); i++) {
+            visitor.setCurrentOp(i);
+            record.visit(i, visitor);
+        }
     }
-    visitor.cleanUp();
 }
 

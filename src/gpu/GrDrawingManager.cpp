@@ -13,6 +13,7 @@
 #include "include/private/SkDeferredDisplayList.h"
 #include "src/core/SkTTopoSort.h"
 #include "src/gpu/GrAuditTrail.h"
+#include "src/gpu/GrClientMappedBufferManager.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrCopyRenderTask.h"
 #include "src/gpu/GrGpu.h"
@@ -25,8 +26,8 @@
 #include "src/gpu/GrResourceAllocator.h"
 #include "src/gpu/GrResourceProvider.h"
 #include "src/gpu/GrSoftwarePathRenderer.h"
+#include "src/gpu/GrSurfaceContext.h"
 #include "src/gpu/GrSurfaceProxyPriv.h"
-#include "src/gpu/GrTextureContext.h"
 #include "src/gpu/GrTexturePriv.h"
 #include "src/gpu/GrTextureProxy.h"
 #include "src/gpu/GrTextureProxyPriv.h"
@@ -127,7 +128,7 @@ void GrDrawingManager::RenderTaskDAG::prepForFlush() {
             GrOpsTask* curOpsTask = fRenderTasks[i]->asOpsTask();
 
             if (prevOpsTask && curOpsTask) {
-                SkASSERT(prevOpsTask->fTarget.get() != curOpsTask->fTarget.get());
+                SkASSERT(prevOpsTask->fTargetView != curOpsTask->fTargetView);
             }
 
             prevOpsTask = curOpsTask;
@@ -248,6 +249,7 @@ GrSemaphoresSubmitted GrDrawingManager::flush(GrSurfaceProxy* proxies[], int num
         }
         return GrSemaphoresSubmitted::kNo; // Can't flush while DDL recording
     }
+    direct->priv().clientMappedBufferManager()->process();
 
     GrGpu* gpu = direct->priv().getGpu();
     if (!gpu) {
@@ -531,7 +533,8 @@ GrSemaphoresSubmitted GrDrawingManager::flushSurfaces(GrSurfaceProxy* proxies[],
             SkASSERT(rtProxy);
             if (rtProxy->isMSAADirty()) {
                 SkASSERT(rtProxy->peekRenderTarget());
-                gpu->resolveRenderTarget(rtProxy->peekRenderTarget());
+                gpu->resolveRenderTarget(rtProxy->peekRenderTarget(), rtProxy->msaaDirtyRect(),
+                                         rtProxy->origin(), GrGpu::ForExternalIO::kYes);
                 rtProxy->markMSAAResolved();
             }
         }
@@ -574,6 +577,14 @@ void GrDrawingManager::moveRenderTasksToDDL(SkDeferredDisplayList* ddl) {
 
     fDAG.swap(&ddl->fRenderTasks);
 
+    for (auto renderTask : ddl->fRenderTasks) {
+        renderTask->prePrepare(fContext);
+    }
+
+    ddl->fArenas = std::move(fContext->priv().detachArenas());
+
+    fContext->priv().detachProgramInfos(&ddl->fProgramInfos);
+
     if (fPathRendererChain) {
         if (auto ccpr = fPathRendererChain->getCoverageCountingPathRenderer()) {
             ddl->fPendingPaths = ccpr->detachPendingPaths();
@@ -584,7 +595,7 @@ void GrDrawingManager::moveRenderTasksToDDL(SkDeferredDisplayList* ddl) {
 }
 
 void GrDrawingManager::copyRenderTasksFromDDL(const SkDeferredDisplayList* ddl,
-                                          GrRenderTargetProxy* newDest) {
+                                              GrRenderTargetProxy* newDest) {
     SkDEBUGCODE(this->validate());
 
     if (fActiveOpsTask) {
@@ -661,15 +672,18 @@ void GrDrawingManager::closeRenderTasksForNewRenderTask(GrSurfaceProxy* target) 
     }
 }
 
-sk_sp<GrOpsTask> GrDrawingManager::newOpsTask(sk_sp<GrRenderTargetProxy> rtp, bool managedOpsTask) {
+sk_sp<GrOpsTask> GrDrawingManager::newOpsTask(GrSurfaceProxyView surfaceView,
+                                              bool managedOpsTask) {
     SkDEBUGCODE(this->validate());
     SkASSERT(fContext);
 
-    this->closeRenderTasksForNewRenderTask(rtp.get());
+    GrSurfaceProxy* proxy = surfaceView.proxy();
+    this->closeRenderTasksForNewRenderTask(proxy);
 
-    sk_sp<GrOpsTask> opsTask(new GrOpsTask(fContext->priv().refOpMemoryPool(), rtp,
+    sk_sp<GrOpsTask> opsTask(new GrOpsTask(fContext->priv().arenas(),
+                                           std::move(surfaceView),
                                            fContext->priv().auditTrail()));
-    SkASSERT(rtp->getLastRenderTask() == opsTask.get());
+    SkASSERT(proxy->getLastRenderTask() == opsTask.get());
 
     if (managedOpsTask) {
         fDAG.add(opsTask);
@@ -698,14 +712,15 @@ GrTextureResolveRenderTask* GrDrawingManager::newTextureResolveRenderTask(const 
 }
 
 void GrDrawingManager::newWaitRenderTask(sk_sp<GrSurfaceProxy> proxy,
-                                         std::unique_ptr<sk_sp<GrSemaphore>[]> semaphores,
+                                         std::unique_ptr<std::unique_ptr<GrSemaphore>[]> semaphores,
                                          int numSemaphores) {
     SkDEBUGCODE(this->validate());
     SkASSERT(fContext);
 
     const GrCaps& caps = *fContext->priv().caps();
 
-    sk_sp<GrWaitRenderTask> waitTask = sk_make_sp<GrWaitRenderTask>(proxy, std::move(semaphores),
+    sk_sp<GrWaitRenderTask> waitTask = sk_make_sp<GrWaitRenderTask>(GrSurfaceProxyView(proxy),
+                                                                    std::move(semaphores),
                                                                     numSemaphores);
     if (fReduceOpsTaskSplitting) {
         GrRenderTask* lastTask = proxy->getLastRenderTask();
@@ -736,7 +751,7 @@ void GrDrawingManager::newWaitRenderTask(sk_sp<GrSurfaceProxy> proxy,
         }
         fDAG.add(waitTask);
     } else {
-        if (fActiveOpsTask && (fActiveOpsTask->fTarget == proxy)) {
+        if (fActiveOpsTask && (fActiveOpsTask->fTargetView.proxy() == proxy.get())) {
             SkASSERT(proxy->getLastRenderTask() == fActiveOpsTask);
             fDAG.addBeforeLast(waitTask);
             // In this case we keep the current renderTask open but just insert the new waitTask
@@ -799,24 +814,28 @@ void GrDrawingManager::newTransferFromRenderTask(sk_sp<GrSurfaceProxy> srcProxy,
     SkDEBUGCODE(this->validate());
 }
 
-bool GrDrawingManager::newCopyRenderTask(sk_sp<GrSurfaceProxy> srcProxy,
+bool GrDrawingManager::newCopyRenderTask(GrSurfaceProxyView srcView,
                                          const SkIRect& srcRect,
-                                         sk_sp<GrSurfaceProxy> dstProxy,
+                                         GrSurfaceProxyView dstView,
                                          const SkIPoint& dstPoint) {
     SkDEBUGCODE(this->validate());
     SkASSERT(fContext);
-    this->closeRenderTasksForNewRenderTask(dstProxy.get());
 
-    GrRenderTask* task = fDAG.add(GrCopyRenderTask::Make(srcProxy, srcRect, dstProxy, dstPoint));
+    this->closeRenderTasksForNewRenderTask(dstView.proxy());
+    const GrCaps& caps = *fContext->priv().caps();
+
+    GrSurfaceProxy* srcProxy = srcView.proxy();
+
+    GrRenderTask* task =
+            fDAG.add(GrCopyRenderTask::Make(std::move(srcView), srcRect, std::move(dstView),
+                                            dstPoint, &caps));
     if (!task) {
         return false;
     }
 
-    const GrCaps& caps = *fContext->priv().caps();
-
     // We always say GrMipMapped::kNo here since we are always just copying from the base layer to
     // another base layer. We don't need to make sure the whole mip map chain is valid.
-    task->addDependency(srcProxy.get(), GrMipMapped::kNo, GrTextureResolveManager(this), caps);
+    task->addDependency(srcProxy, GrMipMapped::kNo, GrTextureResolveManager(this), caps);
     task->makeClosed(caps);
 
     // We have closed the previous active oplist but since a new oplist isn't being added there
@@ -890,55 +909,3 @@ void GrDrawingManager::flushIfNecessary() {
     }
 }
 
-std::unique_ptr<GrRenderTargetContext> GrDrawingManager::makeRenderTargetContext(
-        sk_sp<GrSurfaceProxy> sProxy,
-        GrColorType colorType,
-        sk_sp<SkColorSpace> colorSpace,
-        const SkSurfaceProps* surfaceProps,
-        bool managedOpsTask) {
-    if (this->wasAbandoned() || !sProxy->asRenderTargetProxy()) {
-        return nullptr;
-    }
-
-    // SkSurface catches bad color space usage at creation. This check handles anything that slips
-    // by, including internal usage.
-    if (!SkSurface_Gpu::Valid(fContext->priv().caps(), sProxy->backendFormat())) {
-        SkDEBUGFAIL("Invalid config and colorspace combination");
-        return nullptr;
-    }
-
-    sk_sp<GrRenderTargetProxy> renderTargetProxy(sk_ref_sp(sProxy->asRenderTargetProxy()));
-
-    return std::unique_ptr<GrRenderTargetContext>(
-            new GrRenderTargetContext(fContext,
-                                      std::move(renderTargetProxy),
-                                      colorType,
-                                      std::move(colorSpace),
-                                      surfaceProps,
-                                      managedOpsTask));
-}
-
-std::unique_ptr<GrTextureContext> GrDrawingManager::makeTextureContext(
-        sk_sp<GrSurfaceProxy> sProxy,
-        GrColorType colorType,
-        SkAlphaType alphaType,
-        sk_sp<SkColorSpace> colorSpace) {
-    if (this->wasAbandoned() || !sProxy->asTextureProxy()) {
-        return nullptr;
-    }
-
-    // SkSurface catches bad color space usage at creation. This check handles anything that slips
-    // by, including internal usage.
-    if (!SkSurface_Gpu::Valid(fContext->priv().caps(), sProxy->backendFormat())) {
-        SkDEBUGFAIL("Invalid config and colorspace combination");
-        return nullptr;
-    }
-
-    // GrTextureRenderTargets should always be using a GrRenderTargetContext
-    SkASSERT(!sProxy->asRenderTargetProxy());
-
-    sk_sp<GrTextureProxy> textureProxy(sk_ref_sp(sProxy->asTextureProxy()));
-
-    return std::unique_ptr<GrTextureContext>(new GrTextureContext(
-            fContext, std::move(textureProxy), colorType, alphaType, std::move(colorSpace)));
-}

@@ -18,6 +18,7 @@
 #include "src/gpu/GrPaint.h"
 #include "src/gpu/GrRenderTargetProxy.h"
 #include "src/gpu/GrSurfaceContext.h"
+#include "src/gpu/GrSurfaceProxyView.h"
 #include "src/gpu/GrXferProcessor.h"
 #include "src/gpu/geometry/GrQuad.h"
 #include "src/gpu/text/GrTextTarget.h"
@@ -26,7 +27,6 @@ class GrBackendSemaphore;
 class GrClip;
 class GrColorSpaceXform;
 class GrCoverageCountingPathRenderer;
-class GrDrawingManager;
 class GrDrawOp;
 class GrFixedClip;
 class GrOp;
@@ -57,6 +57,59 @@ class SkVertices;
  */
 class GrRenderTargetContext : public GrSurfaceContext {
 public:
+    static std::unique_ptr<GrRenderTargetContext> Make(
+            GrRecordingContext*, GrColorType, sk_sp<SkColorSpace>, sk_sp<GrSurfaceProxy>,
+            GrSurfaceOrigin, const SkSurfaceProps*, bool managedOps = true);
+
+    static std::unique_ptr<GrRenderTargetContext> Make(
+            GrRecordingContext*, GrColorType, sk_sp<SkColorSpace>, SkBackingFit,
+            const SkISize& dimensions, const GrBackendFormat&, int sampleCnt, GrMipMapped,
+            GrProtected, GrSurfaceOrigin, SkBudgeted, const SkSurfaceProps*);
+
+    // Same as above but will use the default GrBackendFormat for the given GrColorType
+    static std::unique_ptr<GrRenderTargetContext> Make(
+            GrRecordingContext*, GrColorType, sk_sp<SkColorSpace>, SkBackingFit,
+            const SkISize& dimensions, int sampleCnt = 1, GrMipMapped = GrMipMapped::kNo,
+            GrProtected = GrProtected::kNo, GrSurfaceOrigin = kBottomLeft_GrSurfaceOrigin,
+            SkBudgeted = SkBudgeted::kYes, const SkSurfaceProps* = nullptr);
+
+    // Same as previous factory but will try to use fallback GrColorTypes if the one passed in
+    // fails. The fallback GrColorType will have at least the number of channels and precision per
+    // channel as the passed in GrColorType. It may also swizzle the changes (e.g., BGRA -> RGBA).
+    // SRGB-ness will be preserved.
+    static std::unique_ptr<GrRenderTargetContext> MakeWithFallback(
+            GrRecordingContext*, GrColorType, sk_sp<SkColorSpace>, SkBackingFit,
+            const SkISize& dimensions, int sampleCnt = 1, GrMipMapped = GrMipMapped::kNo,
+            GrProtected = GrProtected::kNo, GrSurfaceOrigin = kBottomLeft_GrSurfaceOrigin,
+            SkBudgeted = SkBudgeted::kYes, const SkSurfaceProps* = nullptr);
+
+    // These match the definitions in SkSurface & GrSurface.h, for whence they came
+    typedef void* ReleaseContext;
+    typedef void (*ReleaseProc)(ReleaseContext);
+
+    // Creates a GrRenderTargetContext that wraps the passed in GrBackendTexture.
+    static std::unique_ptr<GrRenderTargetContext> MakeFromBackendTexture(
+            GrRecordingContext*, GrColorType, sk_sp<SkColorSpace>, const GrBackendTexture&,
+            int sampleCnt, GrSurfaceOrigin, const SkSurfaceProps*, ReleaseProc releaseProc,
+            ReleaseContext releaseCtx);
+
+    static std::unique_ptr<GrRenderTargetContext> MakeFromBackendTextureAsRenderTarget(
+            GrRecordingContext*, GrColorType, sk_sp<SkColorSpace>, const GrBackendTexture&,
+            int sampleCnt, GrSurfaceOrigin, const SkSurfaceProps*);
+
+    static std::unique_ptr<GrRenderTargetContext> MakeFromBackendRenderTarget(
+            GrRecordingContext*, GrColorType, sk_sp<SkColorSpace>, const GrBackendRenderTarget&,
+            GrSurfaceOrigin, const SkSurfaceProps*, ReleaseProc releaseProc,
+            ReleaseContext releaseCtx);
+
+    static std::unique_ptr<GrRenderTargetContext> MakeFromVulkanSecondaryCB(
+            GrRecordingContext*, const SkImageInfo&, const GrVkDrawableInfo&,
+            const SkSurfaceProps*);
+
+    GrRenderTargetContext(GrRecordingContext*, sk_sp<GrSurfaceProxy>, GrColorType,
+                          GrSurfaceOrigin, GrSwizzle readSwizzle, GrSwizzle outSwizzle,
+                          sk_sp<SkColorSpace>, const SkSurfaceProps*, bool managedOpsTask = true);
+
     ~GrRenderTargetContext() override;
 
     virtual void drawGlyphRunList(const GrClip&, const SkMatrix& viewMatrix, const SkGlyphRunList&);
@@ -194,16 +247,19 @@ public:
      * specifies the rectangle to draw in local coords which will be transformed by 'viewMatrix' to
      * device space.
      */
-    void drawTexture(const GrClip& clip, sk_sp<GrTextureProxy> proxy, GrSamplerState::Filter filter,
-                     SkBlendMode mode, const SkPMColor4f& color, const SkRect& srcRect,
-                     const SkRect& dstRect, GrAA aa, GrQuadAAFlags edgeAA,
-                     SkCanvas::SrcRectConstraint constraint, const SkMatrix& viewMatrix,
-                     sk_sp<GrColorSpaceXform> texXform) {
+    void drawTexture(const GrClip& clip, sk_sp<GrTextureProxy> proxy, GrColorType srcColorType,
+                     SkAlphaType srcAlphaType, GrSamplerState::Filter filter, SkBlendMode mode,
+                     const SkPMColor4f& color, const SkRect& srcRect, const SkRect& dstRect,
+                     GrAA aa, GrQuadAAFlags edgeAA, SkCanvas::SrcRectConstraint constraint,
+                     const SkMatrix& viewMatrix, sk_sp<GrColorSpaceXform> texXform) {
         const SkRect* domain = constraint == SkCanvas::kStrict_SrcRectConstraint ?
                 &srcRect : nullptr;
-        this->drawTexturedQuad(clip, std::move(proxy), std::move(texXform), filter,
-                               color, mode, aa, edgeAA, GrQuad::MakeFromRect(dstRect, viewMatrix),
-                               GrQuad(srcRect), domain);
+        GrSurfaceOrigin origin = proxy->origin();
+        const GrSwizzle& swizzle = proxy->textureSwizzle();
+        GrSurfaceProxyView proxyView(std::move(proxy), origin, swizzle);
+        this->drawTexturedQuad(clip, std::move(proxyView), srcAlphaType, std::move(texXform),
+                               filter, color, mode, aa, edgeAA,
+                               GrQuad::MakeFromRect(dstRect, viewMatrix), GrQuad(srcRect), domain);
     }
 
     /**
@@ -212,19 +268,25 @@ public:
      * 'domain' is null, it's equivalent to using the fast src rect constraint. If 'domain' is
      * provided, the strict src rect constraint is applied using 'domain'.
      */
-    void drawTextureQuad(const GrClip& clip, sk_sp<GrTextureProxy> proxy,
-                         GrSamplerState::Filter filter, SkBlendMode mode, const SkPMColor4f& color,
-                         const SkPoint srcQuad[4], const SkPoint dstQuad[4], GrAA aa,
-                         GrQuadAAFlags edgeAA, const SkRect* domain, const SkMatrix& viewMatrix,
+    void drawTextureQuad(const GrClip& clip, sk_sp<GrTextureProxy> proxy, GrColorType srcColorType,
+                         SkAlphaType srcAlphaType, GrSamplerState::Filter filter, SkBlendMode mode,
+                         const SkPMColor4f& color, const SkPoint srcQuad[4],
+                         const SkPoint dstQuad[4], GrAA aa, GrQuadAAFlags edgeAA,
+                         const SkRect* domain, const SkMatrix& viewMatrix,
                          sk_sp<GrColorSpaceXform> texXform) {
-        this->drawTexturedQuad(clip, std::move(proxy), std::move(texXform), filter, color, mode,
-                               aa, edgeAA, GrQuad::MakeFromSkQuad(dstQuad, viewMatrix),
+        GrSurfaceOrigin origin = proxy->origin();
+        const GrSwizzle& swizzle = proxy->textureSwizzle();
+        GrSurfaceProxyView proxyView(std::move(proxy), origin, swizzle);
+        this->drawTexturedQuad(clip, std::move(proxyView), srcAlphaType, std::move(texXform),
+                               filter, color, mode, aa, edgeAA,
+                               GrQuad::MakeFromSkQuad(dstQuad, viewMatrix),
                                GrQuad::MakeFromSkQuad(srcQuad, SkMatrix::I()), domain);
     }
 
     /** Used with drawTextureSet */
     struct TextureSetEntry {
-        sk_sp<GrTextureProxy> fProxy;
+        GrSurfaceProxyView fProxyView;
+        SkAlphaType fSrcAlphaType;
         SkRect fSrcRect;
         SkRect fDstRect;
         const SkPoint* fDstClipQuad; // Must be null, or point to an array of 4 points
@@ -238,10 +300,15 @@ public:
      *
      * If any entries provide a non-null fDstClip array, it will be read from immediately based on
      * fDstClipCount, so the pointer can become invalid after this returns.
+     *
+     * 'proxRunCnt' is the number of proxy changes encountered in the entry array. Technically this
+     * can be inferred from the array within this function, but the information is already known
+     * by SkGpuDevice, so no need to incur another iteration over the array.
      */
-    void drawTextureSet(const GrClip&, const TextureSetEntry[], int cnt, GrSamplerState::Filter,
-                        SkBlendMode mode, GrAA aa, SkCanvas::SrcRectConstraint,
-                        const SkMatrix& viewMatrix, sk_sp<GrColorSpaceXform> texXform);
+    void drawTextureSet(const GrClip&, TextureSetEntry[], int cnt, int proxyRunCnt,
+                        GrSamplerState::Filter, SkBlendMode mode, GrAA aa,
+                        SkCanvas::SrcRectConstraint, const SkMatrix& viewMatrix,
+                        sk_sp<GrColorSpaceXform> texXform);
 
     /**
      * Draw a roundrect using a paint.
@@ -421,7 +488,8 @@ public:
     void drawImageLattice(const GrClip&,
                           GrPaint&&,
                           const SkMatrix& viewMatrix,
-                          sk_sp<GrTextureProxy>,
+                          GrSurfaceProxyView,
+                          GrColorType srcColorType,
                           sk_sp<GrColorSpaceXform>,
                           GrSamplerState::Filter,
                           std::unique_ptr<SkLatticeIter>,
@@ -441,7 +509,6 @@ public:
     void drawDrawable(std::unique_ptr<SkDrawable::GpuDrawHandler>, const SkRect& bounds);
 
     using ReadPixelsCallback = SkSurface::ReadPixelsCallback;
-    using ReadPixelsCallbackYUV420 = SkSurface::ReadPixelsCallbackYUV420;
     using ReadPixelsContext = SkSurface::ReadPixelsContext;
     using RescaleGamma = SkSurface::RescaleGamma;
 
@@ -451,10 +518,12 @@ public:
                                    ReadPixelsCallback callback, ReadPixelsContext context);
     // GPU implementation for SkSurface::asyncRescaleAndReadPixelsYUV420.
     void asyncRescaleAndReadPixelsYUV420(SkYUVColorSpace yuvColorSpace,
-                                         sk_sp<SkColorSpace> dstColorSpace, const SkIRect& srcRect,
-                                         int dstW, int dstH, RescaleGamma rescaleGamma,
+                                         sk_sp<SkColorSpace> dstColorSpace,
+                                         const SkIRect& srcRect,
+                                         const SkISize& dstSize,
+                                         RescaleGamma rescaleGamma,
                                          SkFilterQuality rescaleQuality,
-                                         ReadPixelsCallbackYUV420 callback,
+                                         ReadPixelsCallback callback,
                                          ReadPixelsContext context);
 
     /**
@@ -469,31 +538,18 @@ public:
      */
     bool waitOnSemaphores(int numSemaphores, const GrBackendSemaphore waitSemaphores[]);
 
-    void insertEventMarker(const SkString&);
-
-    const GrRenderTargetProxy* proxy() const { return fRenderTargetProxy.get(); }
-    int width() const { return fRenderTargetProxy->width(); }
-    int height() const { return fRenderTargetProxy->height(); }
-    int numSamples() const { return fRenderTargetProxy->numSamples(); }
+    int numSamples() const { return this->asRenderTargetProxy()->numSamples(); }
     const SkSurfaceProps& surfaceProps() const { return fSurfaceProps; }
-    GrSurfaceOrigin origin() const { return fRenderTargetProxy->origin(); }
-    bool wrapsVkSecondaryCB() const { return fRenderTargetProxy->wrapsVkSecondaryCB(); }
+    bool wrapsVkSecondaryCB() const { return this->asRenderTargetProxy()->wrapsVkSecondaryCB(); }
     GrMipMapped mipMapped() const;
+
+    GrSurfaceProxyView outputSurfaceView() {
+        return { fSurfaceProxy, fOrigin, fOutputSwizzle };
+    }
 
     // This entry point should only be called if the backing GPU object is known to be
     // instantiated.
-    GrRenderTarget* accessRenderTarget() { return fRenderTargetProxy->peekRenderTarget(); }
-
-    GrSurfaceProxy* asSurfaceProxy() override { return fRenderTargetProxy.get(); }
-    const GrSurfaceProxy* asSurfaceProxy() const override { return fRenderTargetProxy.get(); }
-    sk_sp<GrSurfaceProxy> asSurfaceProxyRef() override { return fRenderTargetProxy; }
-
-    GrTextureProxy* asTextureProxy() override;
-    const GrTextureProxy* asTextureProxy() const override;
-    sk_sp<GrTextureProxy> asTextureProxyRef() override;
-
-    GrRenderTargetProxy* asRenderTargetProxy() override { return fRenderTargetProxy.get(); }
-    sk_sp<GrRenderTargetProxy> asRenderTargetProxyRef() override { return fRenderTargetProxy; }
+    GrRenderTarget* accessRenderTarget() { return fSurfaceProxy->peekRenderTarget(); }
 
     GrRenderTargetContext* asRenderTargetContext() override { return this; }
 
@@ -504,16 +560,10 @@ public:
     GrTextTarget* textTarget() { return fTextTarget.get(); }
 
 #if GR_TEST_UTILS
-    bool testingOnly_IsInstantiated() const { return fRenderTargetProxy->isInstantiated(); }
+    bool testingOnly_IsInstantiated() const { return fSurfaceProxy->isInstantiated(); }
     void testingOnly_SetPreserveOpsOnFullClear() { fPreserveOpsOnFullClear_TestingOnly = true; }
     GrOpsTask* testingOnly_PeekLastOpsTask() { return fOpsTask.get(); }
 #endif
-
-protected:
-    GrRenderTargetContext(GrRecordingContext*, sk_sp<GrRenderTargetProxy>, GrColorType,
-                          sk_sp<SkColorSpace>, const SkSurfaceProps*, bool managedOpsTask = true);
-
-    SkDEBUGCODE(void validate() const override;)
 
 private:
     class TextTarget;
@@ -525,7 +575,6 @@ private:
     friend class GrClipStackClip;               // for access to getOpsTask
     friend class GrOnFlushResourceProvider;     // for access to getOpsTask (http://skbug.com/9357)
 
-    friend class GrDrawingManager; // for ctor
     friend class GrRenderTargetContextPriv;
 
     // All the path renderers currently make their own ops
@@ -540,14 +589,15 @@ private:
     friend class GrTessellatingPathRenderer;         // for access to add[Mesh]DrawOp
     friend class GrCCPerFlushResources;              // for access to addDrawOp
     friend class GrCoverageCountingPathRenderer;     // for access to addDrawOp
-    // for a unit test
-    friend void test_draw_op(GrContext*,
-                             GrRenderTargetContext*,
-                             std::unique_ptr<GrFragmentProcessor>,
-                             sk_sp<GrTextureProxy>);
+    friend class GrFillRectOp;                       // for access to addDrawOp
+    friend class GrGpuTessellationPathRenderer;      // for access to addDrawOp
+    friend class GrTextureOp;                        // for access to addDrawOp
+
+    SkDEBUGCODE(void onValidate() const override;)
+
 
     GrOpsTask::CanDiscardPreviousOps canDiscardPreviousOpsOnFullClear() const;
-    void setNeedsStencil(bool multisampled);
+    void setNeedsStencil(bool useMixedSamplesIfNotMSAA);
 
     void internalClear(const GrFixedClip&, const SkPMColor4f&, CanClearFullscreen);
     void internalStencilClear(const GrFixedClip&, bool insideStencilMask);
@@ -591,7 +641,8 @@ private:
 
     // Like drawFilledQuad but does not require using a GrPaint or FP for texturing
     void drawTexturedQuad(const GrClip& clip,
-                          sk_sp<GrTextureProxy> proxy,
+                          GrSurfaceProxyView proxyView,
+                          SkAlphaType alphaType,
                           sk_sp<GrColorSpaceXform> textureXform,
                           GrSamplerState::Filter filter,
                           const SkPMColor4f& color,
@@ -619,8 +670,10 @@ private:
     // Makes a copy of the proxy if it is necessary for the draw and places the texture that should
     // be used by GrXferProcessor to access the destination color in 'result'. If the return
     // value is false then a texture copy could not be made.
-    bool SK_WARN_UNUSED_RESULT setupDstProxy(const GrClip&, const GrOp& op,
-                                             GrXferProcessor::DstProxy* result);
+    bool SK_WARN_UNUSED_RESULT setupDstProxyView(const GrClip&, const GrOp& op,
+                                                 GrXferProcessor::DstProxyView* result);
+
+    class AsyncReadResult;
 
     // The async read step of asyncRescaleAndReadPixels()
     void asyncReadPixels(const SkIRect& rect, SkColorType colorType, ReadPixelsCallback callback,
@@ -629,7 +682,8 @@ private:
     GrOpsTask* getOpsTask();
 
     std::unique_ptr<GrTextTarget> fTextTarget;
-    sk_sp<GrRenderTargetProxy> fRenderTargetProxy;
+
+    GrSwizzle fOutputSwizzle;
 
     // In MDB-mode the GrOpsTask can be closed by some other renderTargetContext that has picked
     // it up. For this reason, the GrOpsTask should only ever be accessed via 'getOpsTask'.

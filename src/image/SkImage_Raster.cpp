@@ -77,7 +77,7 @@ public:
     const SkBitmap* onPeekBitmap() const override { return &fBitmap; }
 
 #if SK_SUPPORT_GPU
-    sk_sp<GrTextureProxy> asTextureProxyRef(GrRecordingContext*, const GrSamplerState&,
+    sk_sp<GrTextureProxy> asTextureProxyRef(GrRecordingContext*, GrSamplerState,
                                             SkScalar scaleAdjust[2]) const override;
 #endif
 
@@ -167,7 +167,7 @@ bool SkImage_Raster::getROPixels(SkBitmap* dst, CachingHint) const {
 
 #if SK_SUPPORT_GPU
 sk_sp<GrTextureProxy> SkImage_Raster::asTextureProxyRef(GrRecordingContext* context,
-                                                        const GrSamplerState& params,
+                                                        GrSamplerState params,
                                                         SkScalar scaleAdjust[2]) const {
     if (!context) {
         return nullptr;
@@ -176,9 +176,8 @@ sk_sp<GrTextureProxy> SkImage_Raster::asTextureProxyRef(GrRecordingContext* cont
     uint32_t uniqueID;
     sk_sp<GrTextureProxy> tex = this->refPinnedTextureProxy(context, &uniqueID);
     if (tex) {
-        GrTextureAdjuster adjuster(context, fPinnedProxy,
-                                   SkColorTypeToGrColorType(fBitmap.colorType()),
-                                   fBitmap.alphaType(), fPinnedUniqueID, fBitmap.colorSpace());
+        GrTextureAdjuster adjuster(context, fPinnedProxy, fBitmap.info().colorInfo(),
+                                   fPinnedUniqueID);
         return adjuster.refTextureProxyForParams(params, scaleAdjust);
     }
 
@@ -206,7 +205,7 @@ bool SkImage_Raster::onPinAsTexture(GrContext* ctx) const {
     } else {
         SkASSERT(fPinnedCount == 0);
         SkASSERT(fPinnedUniqueID == 0);
-        fPinnedProxy = GrRefCachedBitmapTextureProxy(ctx, fBitmap, GrSamplerState::ClampNearest(),
+        fPinnedProxy = GrRefCachedBitmapTextureProxy(ctx, fBitmap, GrSamplerState::Filter::kNearest,
                                                      nullptr);
         if (!fPinnedProxy) {
             return false;
@@ -231,7 +230,7 @@ void SkImage_Raster::onUnpinAsTexture(GrContext* ctx) const {
 #endif
 
 sk_sp<SkImage> SkImage_Raster::onMakeSubset(GrRecordingContext*, const SkIRect& subset) const {
-    SkImageInfo info = fBitmap.info().makeWH(subset.width(), subset.height());
+    SkImageInfo info = fBitmap.info().makeDimensions(subset.size());
     SkBitmap bitmap;
     if (!bitmap.tryAllocPixels(info)) {
         return nullptr;

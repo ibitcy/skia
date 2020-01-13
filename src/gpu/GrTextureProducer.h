@@ -11,7 +11,7 @@
 #include "include/core/SkImageInfo.h"
 #include "include/private/GrResourceKey.h"
 #include "include/private/SkNoncopyable.h"
-#include "src/gpu/GrColorSpaceInfo.h"
+#include "src/gpu/GrImageInfo.h"
 #include "src/gpu/GrSamplerState.h"
 
 class GrFragmentProcessor;
@@ -34,8 +34,7 @@ class GrTextureProducer : public SkNoncopyable {
 public:
     struct CopyParams {
         GrSamplerState::Filter fFilter;
-        int fWidth;
-        int fHeight;
+        SkISize fDimensions;
     };
 
     enum FilterConstraint {
@@ -83,8 +82,7 @@ public:
      * contract that if scaleAdjust is not null it must be initialized to {1, 1} before calling
      * this method. (TODO: Fix this and make this function always initialize scaleAdjust).
      */
-    sk_sp<GrTextureProxy> refTextureProxyForParams(const GrSamplerState&,
-                                                   SkScalar scaleAdjust[2]);
+    sk_sp<GrTextureProxy> refTextureProxyForParams(GrSamplerState, SkScalar scaleAdjust[2]);
 
     sk_sp<GrTextureProxy> refTextureProxyForParams(
             const GrSamplerState::Filter* filterOrNullForBicubic, SkScalar scaleAdjust[2]);
@@ -102,12 +100,14 @@ public:
 
     virtual ~GrTextureProducer() {}
 
-    int width() const { return fWidth; }
-    int height() const { return fHeight; }
-    GrColorType colorType() const { return fColorSpaceInfo.colorType(); }
-    SkAlphaType alphaType() const { return fColorSpaceInfo.alphaType(); }
-    SkColorSpace* colorSpace() const { return fColorSpaceInfo.colorSpace(); }
-    bool isAlphaOnly() const { return GrColorTypeIsAlphaOnly(fColorSpaceInfo.colorType()); }
+    int width() const { return fImageInfo.width(); }
+    int height() const { return fImageInfo.height(); }
+    SkISize dimensions() const { return fImageInfo.dimensions(); }
+    const GrColorInfo& colorInfo() const { return fImageInfo.colorInfo(); }
+    GrColorType colorType() const { return fImageInfo.colorType(); }
+    SkAlphaType alphaType() const { return fImageInfo.alphaType(); }
+    SkColorSpace* colorSpace() const { return fImageInfo.colorSpace(); }
+    bool isAlphaOnly() const { return GrColorTypeIsAlphaOnly(fImageInfo.colorType()); }
     bool domainNeedsDecal() const { return fDomainNeedsDecal; }
     // If the "texture" samples multiple images that have different resolutions (e.g. YUV420)
     virtual bool hasMixedResolutions() const { return false; }
@@ -115,13 +115,10 @@ public:
 protected:
     friend class GrTextureProducer_TestAccess;
 
-    GrTextureProducer(GrRecordingContext* context, int width, int height,
-                      const GrColorSpaceInfo& csInfo, bool domainNeedsDecal)
-            : fContext(context)
-            , fWidth(width)
-            , fHeight(height)
-            , fColorSpaceInfo(csInfo)
-            , fDomainNeedsDecal(domainNeedsDecal) {}
+    GrTextureProducer(GrRecordingContext* context,
+                      const GrImageInfo& imageInfo,
+                      bool domainNeedsDecal)
+            : fContext(context), fImageInfo(imageInfo), fDomainNeedsDecal(domainNeedsDecal) {}
 
     /** Helper for creating a key for a copy from an original key. */
     static void MakeCopyKeyFromOrigKey(const GrUniqueKey& origKey,
@@ -132,8 +129,8 @@ protected:
             static const GrUniqueKey::Domain kDomain = GrUniqueKey::GenerateDomain();
             GrUniqueKey::Builder builder(copyKey, origKey, kDomain, 3);
             builder[0] = static_cast<uint32_t>(copyParams.fFilter);
-            builder[1] = copyParams.fWidth;
-            builder[2] = copyParams.fHeight;
+            builder[1] = copyParams.fDimensions.width();
+            builder[2] = copyParams.fDimensions.height();
         }
     }
 
@@ -184,14 +181,12 @@ protected:
     GrRecordingContext* context() const { return fContext; }
 
 private:
-    virtual sk_sp<GrTextureProxy> onRefTextureProxyForParams(const GrSamplerState&,
+    virtual sk_sp<GrTextureProxy> onRefTextureProxyForParams(GrSamplerState,
                                                              bool willBeMipped,
                                                              SkScalar scaleAdjust[2]) = 0;
 
     GrRecordingContext* fContext;
-    const int fWidth;
-    const int fHeight;
-    const GrColorSpaceInfo fColorSpaceInfo;
+    const GrImageInfo fImageInfo;
     // If true, any domain effect uses kDecal instead of kClamp, and sampler filter uses
     // kClampToBorder instead of kClamp.
     const bool  fDomainNeedsDecal;

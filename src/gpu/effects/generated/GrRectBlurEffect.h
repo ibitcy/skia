@@ -105,7 +105,7 @@ public:
         float invSixSigma = 1.f / sixSigma;
         return std::unique_ptr<GrFragmentProcessor>(
                 new GrRectBlurEffect(insetRect, std::move(integral), invSixSigma, isFast,
-                                     GrSamplerState::ClampBilerp()));
+                                     GrSamplerState::Filter::kBilerp));
     }
     GrRectBlurEffect(const GrRectBlurEffect& src);
     std::unique_ptr<GrFragmentProcessor> clone() const override;
@@ -116,7 +116,7 @@ public:
     bool isFast;
 
 private:
-    GrRectBlurEffect(SkRect rect, sk_sp<GrTextureProxy> integral, float invSixSigma, bool isFast,
+    GrRectBlurEffect(SkRect rect, sk_sp<GrSurfaceProxy> integral, float invSixSigma, bool isFast,
                      GrSamplerState samplerParams)
             : INHERITED(kGrRectBlurEffect_ClassID,
                         (OptimizationFlags)kCompatibleWithCoverageAsAlpha_OptimizationFlag)

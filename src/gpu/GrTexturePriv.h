@@ -47,15 +47,9 @@ public:
     bool hasRestrictedSampling() const {
         return GrTextureTypeHasRestrictedSampling(this->textureType());
     }
-    /** Filtering is clamped to this value. */
-    GrSamplerState::Filter highestFilterMode() const {
-        return this->hasRestrictedSampling() ? GrSamplerState::Filter::kBilerp
-                                             : GrSamplerState::Filter::kMipMap;
-    }
 
     static void ComputeScratchKey(GrPixelConfig config,
-                                  int width,
-                                  int height,
+                                  SkISize dimensions,
                                   GrRenderable,
                                   int sampleCnt,
                                   GrMipMapped,

@@ -25,7 +25,7 @@ static inline VkSamplerAddressMode wrap_mode_to_vk_sampler_address(
     SK_ABORT("Unknown wrap mode.");
 }
 
-GrVkSampler* GrVkSampler::Create(GrVkGpu* gpu, const GrSamplerState& samplerState,
+GrVkSampler* GrVkSampler::Create(GrVkGpu* gpu, GrSamplerState samplerState,
                                  const GrVkYcbcrConversionInfo& ycbcrInfo) {
     static VkFilter vkMinFilterModes[] = {
         VK_FILTER_NEAREST,
@@ -102,10 +102,12 @@ GrVkSampler* GrVkSampler::Create(GrVkGpu* gpu, const GrSamplerState& samplerStat
     }
 
     VkSampler sampler;
-    GR_VK_CALL_ERRCHECK(gpu->vkInterface(), CreateSampler(gpu->device(),
-                                                          &createInfo,
-                                                          nullptr,
-                                                          &sampler));
+    VkResult result;
+    GR_VK_CALL_RESULT(gpu, result, CreateSampler(gpu->device(), &createInfo, nullptr, &sampler));
+    if (result != VK_SUCCESS) {
+        ycbcrConversion->unref(gpu);
+        return nullptr;
+    }
 
     return new GrVkSampler(sampler, ycbcrConversion, GenerateKey(samplerState, ycbcrInfo));
 }
@@ -118,26 +120,8 @@ void GrVkSampler::freeGPUData(GrVkGpu* gpu) const {
     }
 }
 
-void GrVkSampler::abandonGPUData() const {
-    if (fYcbcrConversion) {
-        fYcbcrConversion->unrefAndAbandon();
-    }
-}
-
-GrVkSampler::Key GrVkSampler::GenerateKey(const GrSamplerState& samplerState,
+GrVkSampler::Key GrVkSampler::GenerateKey(GrSamplerState samplerState,
                                           const GrVkYcbcrConversionInfo& ycbcrInfo) {
-    const int kTileModeXShift = 2;
-    const int kTileModeYShift = 4;
-
-    SkASSERT(static_cast<int>(samplerState.filter()) <= 3);
-    uint8_t samplerKey = static_cast<uint16_t>(samplerState.filter());
-
-    SkASSERT(static_cast<int>(samplerState.wrapModeX()) <= 3);
-    samplerKey |= (static_cast<uint8_t>(samplerState.wrapModeX()) << kTileModeXShift);
-
-    SkASSERT(static_cast<int>(samplerState.wrapModeY()) <= 3);
-    samplerKey |= (static_cast<uint8_t>(samplerState.wrapModeY()) << kTileModeYShift);
-
-    return {samplerKey, GrVkSamplerYcbcrConversion::GenerateKey(ycbcrInfo)};
+    return { GrSamplerState::GenerateKey(samplerState),
+             GrVkSamplerYcbcrConversion::GenerateKey(ycbcrInfo) };
 }
-

@@ -5,11 +5,12 @@
  * found in the LICENSE file
  */
 
+#include "src/core/SkSpecialImage.h"
+
 #include "include/core/SkBitmap.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImage.h"
 #include "src/core/SkBitmapCache.h"
-#include "src/core/SkSpecialImage.h"
 #include "src/core/SkSpecialSurface.h"
 #include "src/core/SkSurfacePriv.h"
 #include "src/image/SkImage_Base.h"
@@ -19,6 +20,7 @@
 #include "include/gpu/GrContext.h"
 #include "include/private/GrRecordingContext.h"
 #include "src/gpu/GrContextPriv.h"
+#include "src/gpu/GrImageInfo.h"
 #include "src/gpu/GrProxyProvider.h"
 #include "src/gpu/GrRecordingContextPriv.h"
 #include "src/gpu/GrSurfaceContext.h"
@@ -116,7 +118,7 @@ sk_sp<SkSpecialImage> SkSpecialImage::makeTextureImage(GrRecordingContext* conte
         return nullptr;
     }
 
-    const SkIRect rect = SkIRect::MakeWH(proxy->width(), proxy->height());
+    const SkIRect rect = SkIRect::MakeSize(proxy->dimensions());
 
     // GrMakeCachedBitmapProxy has uploaded only the specified subset of 'bmp' so we need not
     // bother with SkBitmap::getSubset
@@ -172,13 +174,13 @@ sk_sp<SkSurface> SkSpecialImage::makeTightSurface(
 }
 
 sk_sp<SkSpecialImage> SkSpecialImage::makeSubset(const SkIRect& subset) const {
-    SkIRect absolute = subset.makeOffset(this->subset().x(), this->subset().y());
+    SkIRect absolute = subset.makeOffset(this->subset().topLeft());
     return as_SIB(this)->onMakeSubset(absolute);
 }
 
 sk_sp<SkImage> SkSpecialImage::asImage(const SkIRect* subset) const {
     if (subset) {
-        SkIRect absolute = subset->makeOffset(this->subset().x(), this->subset().y());
+        SkIRect absolute = subset->makeOffset(this->subset().topLeft());
         return as_SIB(this)->onAsImage(&absolute);
     } else {
         return as_SIB(this)->onAsImage(nullptr);
@@ -274,8 +276,7 @@ public:
                                           const SkSurfaceProps* props) const override {
         // Ignore the requested color type, the raster backend currently only supports N32
         colorType = kN32_SkColorType;   // TODO: find ways to allow f16
-        SkImageInfo info = SkImageInfo::Make(size.width(), size.height(), colorType, at,
-                                             sk_ref_sp(colorSpace));
+        SkImageInfo info = SkImageInfo::Make(size, colorType, at, sk_ref_sp(colorSpace));
         return SkSpecialSurface::MakeRaster(info, props);
     }
 
@@ -302,8 +303,7 @@ sk_sp<SkSurface> onMakeTightSurface(SkColorType colorType, const SkColorSpace* c
                                         const SkISize& size, SkAlphaType at) const override {
         // Ignore the requested color type, the raster backend currently only supports N32
         colorType = kN32_SkColorType;   // TODO: find ways to allow f16
-        SkImageInfo info = SkImageInfo::Make(size.width(), size.height(), colorType, at,
-                                             sk_ref_sp(colorSpace));
+        SkImageInfo info = SkImageInfo::Make(size, colorType, at, sk_ref_sp(colorSpace));
         return SkSurface::MakeRaster(info);
     }
 
@@ -346,7 +346,7 @@ sk_sp<SkSpecialImage> SkSpecialImage::CopyFromRaster(const SkIRect& subset,
     }
 
     SkBitmap tmp;
-    SkImageInfo info = bm.info().makeWH(subset.width(), subset.height());
+    SkImageInfo info = bm.info().makeDimensions(subset.size());
     // As in MakeFromRaster, must force src to N32 for ImageFilters
     if (!valid_for_imagefilters(bm.info())) {
         info = info.makeColorType(kN32_SkColorType);
@@ -370,9 +370,14 @@ sk_sp<SkSpecialImage> SkSpecialImage::CopyFromRaster(const SkIRect& subset,
 static sk_sp<SkImage> wrap_proxy_in_image(GrRecordingContext* context, sk_sp<GrTextureProxy> proxy,
                                           SkAlphaType alphaType, sk_sp<SkColorSpace> colorSpace) {
     // CONTEXT TODO: remove this use of 'backdoor' to create an SkImage
+    // TODO: Once SkSpecialImage stores a GrSurfaceProxyView instead of a proxy, use that to create
+    // the view here.
+    GrSurfaceOrigin origin = proxy->origin();
+    const GrSwizzle& swizzle = proxy->textureSwizzle();
+    GrSurfaceProxyView view(std::move(proxy), origin, swizzle);
     return sk_make_sp<SkImage_Gpu>(sk_ref_sp(context->priv().backdoor()),
                                    kNeedNewImageUniqueID, alphaType,
-                                   std::move(proxy), std::move(colorSpace));
+                                   std::move(view), std::move(colorSpace));
 }
 
 class SkSpecialImage_Gpu : public SkSpecialImage_Base {
@@ -399,12 +404,17 @@ public:
 
     SkColorType colorType() const override { return GrColorTypeToSkColorType(fColorType); }
 
-    size_t getSize() const override { return fTextureProxy->gpuMemorySize(); }
+    size_t getSize() const override {
+        return fTextureProxy->gpuMemorySize(*fContext->priv().caps());
+    }
 
     void onDraw(SkCanvas* canvas, SkScalar x, SkScalar y, const SkPaint* paint) const override {
         SkRect dst = SkRect::MakeXYWH(x, y,
                                       this->subset().width(), this->subset().height());
 
+        GrSurfaceOrigin origin = fTextureProxy->origin();
+        const GrSwizzle& swizzle = fTextureProxy->textureSwizzle();
+        GrSurfaceProxyView view(fTextureProxy, origin, swizzle);
         // TODO: In this instance we know we're going to draw a sub-portion of the backing
         // texture into the canvas so it is okay to wrap it in an SkImage. This poses
         // some problems for full deferral however in that when the deferred SkImage_Gpu
@@ -413,7 +423,7 @@ public:
         // to be tightened (if it is deferred).
         sk_sp<SkImage> img =
                 sk_sp<SkImage>(new SkImage_Gpu(sk_ref_sp(canvas->getGrContext()), this->uniqueID(),
-                                               fAlphaType, fTextureProxy, fColorSpace));
+                                               fAlphaType, std::move(view), fColorSpace));
 
         canvas->drawImageRect(img, this->subset(),
                               dst, paint, SkCanvas::kStrict_SrcRectConstraint);
@@ -441,9 +451,8 @@ public:
         if (!rec) {
             return false;
         }
-        auto sContext = fContext->priv().makeWrappedSurfaceContext(
-                fTextureProxy, GrPixelConfigToColorType(fTextureProxy->config()), this->alphaType(),
-                fColorSpace);
+        auto sContext = GrSurfaceContext::Make(fContext, fTextureProxy, fColorType,
+                                               this->alphaType(), fColorSpace);
         if (!sContext) {
             return false;
         }
@@ -488,12 +497,8 @@ public:
     // TODO: move all the logic here into the subset-flavor GrSurfaceProxy::copy?
     sk_sp<SkImage> onAsImage(const SkIRect* subset) const override {
         if (subset) {
-            // TODO: if this becomes a bottle neck we could base this logic on what the size
-            // will be when it is finally instantiated - but that is more fraught.
-            if (GrProxyProvider::IsFunctionallyExact(fTextureProxy.get()) &&
-                0 == subset->fLeft && 0 == subset->fTop &&
-                fTextureProxy->width() == subset->width() &&
-                fTextureProxy->height() == subset->height()) {
+            if (fTextureProxy->isFunctionallyExact() &&
+                *subset == SkIRect::MakeSize(fTextureProxy->dimensions())) {
                 fTextureProxy->priv().exactify(false);
                 // The existing GrTexture is already tight so reuse it in the SkImage
                 return wrap_proxy_in_image(fContext, fTextureProxy, fAlphaType, fColorSpace);
@@ -524,8 +529,7 @@ public:
         //    onMakeSurface() or is this unnecessary?
         colorType = colorSpace && colorSpace->gammaIsLinear()
             ? kRGBA_F16_SkColorType : kRGBA_8888_SkColorType;
-        SkImageInfo info = SkImageInfo::Make(size.width(), size.height(), colorType, at,
-                                             sk_ref_sp(colorSpace));
+        SkImageInfo info = SkImageInfo::Make(size, colorType, at, sk_ref_sp(colorSpace));
         // CONTEXT TODO: remove this use of 'backdoor' to create an SkSurface
         return SkSurface::MakeRenderTarget(fContext->priv().backdoor(), SkBudgeted::kYes, info);
     }

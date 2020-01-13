@@ -12,7 +12,6 @@
 #define GrRRectBlurEffect_DEFINED
 #include "include/core/SkTypes.h"
 
-#include "include/effects/SkBlurMaskFilter.h"
 #include "include/gpu/GrContext.h"
 #include "include/private/GrRecordingContext.h"
 #include "src/core/SkBlurPriv.h"
@@ -32,7 +31,7 @@ class GrRRectBlurEffect : public GrFragmentProcessor {
 public:
     static sk_sp<GrTextureProxy> find_or_create_rrect_blur_mask(GrRecordingContext* context,
                                                                 const SkRRect& rrectToDraw,
-                                                                const SkISize& size,
+                                                                const SkISize& dimensions,
                                                                 float xformedSigma) {
         static const GrUniqueKey::Domain kDomain = GrUniqueKey::GenerateDomain();
         GrUniqueKey key;
@@ -57,9 +56,8 @@ public:
             // TODO: this could be SkBackingFit::kApprox, but:
             //   1) The texture coords would need to be updated.
             //   2) We would have to use GrTextureDomain::kClamp_Mode for the GaussianBlur.
-            auto rtc = context->priv().makeDeferredRenderTargetContextWithFallback(
-                    SkBackingFit::kExact, size.fWidth, size.fHeight, GrColorType::kAlpha_8,
-                    nullptr);
+            auto rtc = GrRenderTargetContext::MakeWithFallback(
+                    context, GrColorType::kAlpha_8, nullptr, SkBackingFit::kExact, dimensions);
             if (!rtc) {
                 return nullptr;
             }
@@ -77,12 +75,12 @@ public:
             }
             auto rtc2 = SkGpuBlurUtils::GaussianBlur(context,
                                                      std::move(srcProxy),
-                                                     GrColorType::kAlpha_8,
-                                                     kPremul_SkAlphaType,
+                                                     rtc->colorInfo().colorType(),
+                                                     rtc->colorInfo().alphaType(),
                                                      SkIPoint::Make(0, 0),
                                                      nullptr,
-                                                     SkIRect::MakeWH(size.fWidth, size.fHeight),
-                                                     SkIRect::EmptyIRect(),
+                                                     SkIRect::MakeSize(dimensions),
+                                                     SkIRect::MakeEmpty(),
                                                      xformedSigma,
                                                      xformedSigma,
                                                      GrTextureDomain::kIgnore_Mode,
@@ -117,7 +115,7 @@ public:
 
 private:
     GrRRectBlurEffect(float sigma, SkRect rect, float cornerRadius,
-                      sk_sp<GrTextureProxy> ninePatchSampler)
+                      sk_sp<GrSurfaceProxy> ninePatchSampler)
             : INHERITED(kGrRRectBlurEffect_ClassID,
                         (OptimizationFlags)kCompatibleWithCoverageAsAlpha_OptimizationFlag)
             , sigma(sigma)

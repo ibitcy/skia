@@ -861,15 +861,15 @@ void path_to_contours(const SkPath& path, SkScalar tolerance, const SkRect& clip
     }
 }
 
-inline bool apply_fill_type(SkPath::FillType fillType, int winding) {
+inline bool apply_fill_type(SkPathFillType fillType, int winding) {
     switch (fillType) {
-        case SkPath::kWinding_FillType:
+        case SkPathFillType::kWinding:
             return winding != 0;
-        case SkPath::kEvenOdd_FillType:
+        case SkPathFillType::kEvenOdd:
             return (winding & 1) != 0;
-        case SkPath::kInverseWinding_FillType:
+        case SkPathFillType::kInverseWinding:
             return winding == 1;
-        case SkPath::kInverseEvenOdd_FillType:
+        case SkPathFillType::kInverseEvenOdd:
             return (winding & 1) == 1;
         default:
             SkASSERT(false);
@@ -877,7 +877,7 @@ inline bool apply_fill_type(SkPath::FillType fillType, int winding) {
     }
 }
 
-inline bool apply_fill_type(SkPath::FillType fillType, Poly* poly) {
+inline bool apply_fill_type(SkPathFillType fillType, Poly* poly) {
     return poly && apply_fill_type(fillType, poly->fWinding);
 }
 
@@ -1699,7 +1699,7 @@ Poly* tessellate(const VertexList& vertices, SkArenaAlloc& alloc) {
     return polys;
 }
 
-void remove_non_boundary_edges(const VertexList& mesh, SkPath::FillType fillType,
+void remove_non_boundary_edges(const VertexList& mesh, SkPathFillType fillType,
                                SkArenaAlloc& alloc) {
     TESS_LOG("removing non-boundary edges\n");
     EdgeList activeEdges;
@@ -2118,7 +2118,7 @@ void stroke_boundary(EdgeList* boundary, VertexList* innerMesh, VertexList* oute
     outerMesh->append(outerVertices);
 }
 
-void extract_boundary(EdgeList* boundary, Edge* e, SkPath::FillType fillType, SkArenaAlloc& alloc) {
+void extract_boundary(EdgeList* boundary, Edge* e, SkPathFillType fillType, SkArenaAlloc& alloc) {
     TESS_LOG("\nextracting boundary\n");
     bool down = apply_fill_type(fillType, e->fWinding);
     Vertex* start = down ? e->fTop : e->fBottom;
@@ -2155,7 +2155,7 @@ void extract_boundary(EdgeList* boundary, Edge* e, SkPath::FillType fillType, Sk
 // Stage 5b: Extract boundaries from mesh, simplify and stroke them into a new mesh.
 
 void extract_boundaries(const VertexList& inMesh, VertexList* innerVertices,
-                        VertexList* outerVertices, SkPath::FillType fillType,
+                        VertexList* outerVertices, SkPathFillType fillType,
                         Comparator& c, SkArenaAlloc& alloc) {
     remove_non_boundary_edges(inMesh, fillType, alloc);
     for (Vertex* v = inMesh.fHead; v; v = v->fNext) {
@@ -2205,7 +2205,7 @@ void sort_mesh(VertexList* vertices, Comparator& c, SkArenaAlloc& alloc) {
 #endif
 }
 
-Poly* contours_to_polys(VertexList* contours, int contourCnt, SkPath::FillType fillType,
+Poly* contours_to_polys(VertexList* contours, int contourCnt, SkPathFillType fillType,
                         const SkRect& pathBounds, bool antialias, VertexList* outerMesh,
                         SkArenaAlloc& alloc) {
     Comparator c(pathBounds.width() > pathBounds.height() ? Comparator::Direction::kHorizontal
@@ -2260,7 +2260,7 @@ Poly* contours_to_polys(VertexList* contours, int contourCnt, SkPath::FillType f
 }
 
 // Stage 6: Triangulate the monotone polygons into a vertex buffer.
-void* polys_to_triangles(Poly* polys, SkPath::FillType fillType, bool emitCoverage, void* data) {
+void* polys_to_triangles(Poly* polys, SkPathFillType fillType, bool emitCoverage, void* data) {
     for (Poly* poly = polys; poly; poly = poly->fNext) {
         if (apply_fill_type(fillType, poly)) {
             data = poly->emit(emitCoverage, data);
@@ -2272,8 +2272,8 @@ void* polys_to_triangles(Poly* polys, SkPath::FillType fillType, bool emitCovera
 Poly* path_to_polys(const SkPath& path, SkScalar tolerance, const SkRect& clipBounds,
                     int contourCnt, SkArenaAlloc& alloc, bool antialias, bool* isLinear,
                     VertexList* outerMesh) {
-    SkPath::FillType fillType = path.getFillType();
-    if (SkPath::IsInverseFillType(fillType)) {
+    SkPathFillType fillType = path.getFillType();
+    if (SkPathFillType_IsInverse(fillType)) {
         contourCnt++;
     }
     std::unique_ptr<VertexList[]> contours(new VertexList[contourCnt]);
@@ -2284,15 +2284,40 @@ Poly* path_to_polys(const SkPath& path, SkScalar tolerance, const SkRect& clipBo
 }
 
 int get_contour_count(const SkPath& path, SkScalar tolerance) {
-    int contourCnt;
-    int maxPts = GrPathUtils::worstCasePointCount(path, &contourCnt, tolerance);
-    if (maxPts <= 0) {
+    // We could theoretically be more aggressive about not counting empty contours, but we need to
+    // actually match the exact number of contour linked lists the tessellator will create later on.
+    int contourCnt = 1;
+    bool hasPoints = false;
+
+    SkPath::Iter iter(path, false);
+    SkPath::Verb verb;
+    SkPoint pts[4];
+    bool first = true;
+    while ((verb = iter.next(pts)) != SkPath::kDone_Verb) {
+        switch (verb) {
+            case SkPath::kMove_Verb:
+                if (!first) {
+                    ++contourCnt;
+                }
+                // fallthru.
+            case SkPath::kLine_Verb:
+            case SkPath::kConic_Verb:
+            case SkPath::kQuad_Verb:
+            case SkPath::kCubic_Verb:
+                hasPoints = true;
+                // fallthru to break.
+            default:
+                break;
+        }
+        first = false;
+    }
+    if (!hasPoints) {
         return 0;
     }
     return contourCnt;
 }
 
-int64_t count_points(Poly* polys, SkPath::FillType fillType) {
+int64_t count_points(Poly* polys, SkPathFillType fillType) {
     int64_t count = 0;
     for (Poly* poly = polys; poly; poly = poly->fNext) {
         if (apply_fill_type(fillType, poly) && poly->fCount >= 3) {
@@ -2343,7 +2368,7 @@ int PathToTriangles(const SkPath& path, SkScalar tolerance, const SkRect& clipBo
     VertexList outerMesh;
     Poly* polys = path_to_polys(path, tolerance, clipBounds, contourCnt, alloc, antialias,
                                 isLinear, &outerMesh);
-    SkPath::FillType fillType = antialias ? SkPath::kWinding_FillType : path.getFillType();
+    SkPathFillType fillType = antialias ? SkPathFillType::kWinding : path.getFillType();
     int64_t count64 = count_points(polys, fillType);
     if (antialias) {
         count64 += count_outer_mesh_points(outerMesh);
@@ -2381,7 +2406,7 @@ int PathToVertices(const SkPath& path, SkScalar tolerance, const SkRect& clipBou
     bool isLinear;
     Poly* polys = path_to_polys(path, tolerance, clipBounds, contourCnt, alloc, false, &isLinear,
                                 nullptr);
-    SkPath::FillType fillType = path.getFillType();
+    SkPathFillType fillType = path.getFillType();
     int64_t count64 = count_points(polys, fillType);
     if (0 == count64 || count64 > SK_MaxS32) {
         *verts = nullptr;

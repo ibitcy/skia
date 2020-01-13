@@ -289,7 +289,7 @@ sk_sp<SkImage> SkImage::makeWithFilter(GrContext* grContext,
     // original coordinate system, so configure the CTM to correct crop rects and explicitly adjust
     // the clip bounds (since it is assumed to already be in image space).
     SkImageFilter_Base::Context context(SkMatrix::MakeTrans(-subset.x(), -subset.y()),
-                                        clipBounds.makeOffset(-subset.x(), -subset.y()),
+                                        clipBounds.makeOffset(-subset.topLeft()),
                                         cache.get(), fInfo.colorType(), fInfo.colorSpace(),
                                         srcSpecialImage.get());
 
@@ -309,8 +309,7 @@ sk_sp<SkImage> SkImage::makeWithFilter(GrContext* grContext,
     // result->subset() ensures that the result's image pixel origin does not affect results.
     SkIRect dstRect = result->subset();
     SkIRect clippedDstRect = dstRect;
-    if (!clippedDstRect.intersect(clipBounds.makeOffset(result->subset().x() - offset->x(),
-                                                        result->subset().y() - offset->y()))) {
+    if (!clippedDstRect.intersect(clipBounds.makeOffset(result->subset().topLeft() - *offset))) {
         return nullptr;
     }
 
@@ -403,7 +402,7 @@ sk_sp<SkImage> SkImage::makeNonTextureImage() const {
     return this->makeRasterImage();
 }
 
-sk_sp<SkImage> SkImage::makeRasterImage() const {
+sk_sp<SkImage> SkImage::makeRasterImage(CachingHint chint) const {
     SkPixmap pm;
     if (this->peekPixels(&pm)) {
         return sk_ref_sp(const_cast<SkImage*>(this));
@@ -417,7 +416,7 @@ sk_sp<SkImage> SkImage::makeRasterImage() const {
 
     sk_sp<SkData> data = SkData::MakeUninitialized(size);
     pm = {fInfo.makeColorSpace(nullptr), data->writable_data(), fInfo.minRowBytes()};
-    if (!this->readPixels(pm, 0, 0)) {
+    if (!this->readPixels(pm, 0, 0, chint)) {
         return nullptr;
     }
 
@@ -436,6 +435,16 @@ sk_sp<SkImage> SkImage::MakeFromTexture(GrContext* ctx,
                                         const GrBackendTexture& tex, GrSurfaceOrigin origin,
                                         SkColorType ct, SkAlphaType at, sk_sp<SkColorSpace> cs,
                                         TextureReleaseProc releaseP, ReleaseContext releaseC) {
+    return nullptr;
+}
+
+sk_sp<SkImage> SkImage::MakeFromCompressedTexture(GrContext* ctx,
+                                                  const GrBackendTexture& tex,
+                                                  GrSurfaceOrigin origin,
+                                                  SkAlphaType at,
+                                                  sk_sp<SkColorSpace> cs,
+                                                  TextureReleaseProc releaseP,
+                                                  ReleaseContext releaseC) {
     return nullptr;
 }
 

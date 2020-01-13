@@ -16,7 +16,7 @@
 #include "src/gpu/GrFragmentProcessor.h"
 class GrTextureGradientColorizer : public GrFragmentProcessor {
 public:
-    static std::unique_ptr<GrFragmentProcessor> Make(sk_sp<GrTextureProxy> gradient) {
+    static std::unique_ptr<GrFragmentProcessor> Make(sk_sp<GrSurfaceProxy> gradient) {
         return std::unique_ptr<GrFragmentProcessor>(new GrTextureGradientColorizer(gradient));
     }
     GrTextureGradientColorizer(const GrTextureGradientColorizer& src);
@@ -25,9 +25,9 @@ public:
     TextureSampler gradient;
 
 private:
-    GrTextureGradientColorizer(sk_sp<GrTextureProxy> gradient)
+    GrTextureGradientColorizer(sk_sp<GrSurfaceProxy> gradient)
             : INHERITED(kGrTextureGradientColorizer_ClassID, kNone_OptimizationFlags)
-            , gradient(std::move(gradient), GrSamplerState::ClampBilerp()) {
+            , gradient(std::move(gradient), GrSamplerState::Filter::kBilerp) {
         this->setTextureSamplerCnt(1);
     }
     GrGLSLFragmentProcessor* onCreateGLSLInstance() const override;

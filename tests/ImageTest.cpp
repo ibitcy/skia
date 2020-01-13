@@ -25,7 +25,6 @@
 #include "src/core/SkAutoPixmapStorage.h"
 #include "src/core/SkColorSpacePriv.h"
 #include "src/core/SkImagePriv.h"
-#include "src/core/SkMakeUnique.h"
 #include "src/core/SkUtils.h"
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrGpu.h"
@@ -614,7 +613,7 @@ DEF_TEST(ImageEmpty, reporter) {
     REPORTER_ASSERT(reporter, nullptr == SkImage::MakeRasterData(info, nullptr, 0));
     REPORTER_ASSERT(reporter, nullptr == SkImage::MakeFromRaster(pmap, nullptr, nullptr));
     REPORTER_ASSERT(reporter, nullptr == SkImage::MakeFromGenerator(
-                                                            skstd::make_unique<EmptyGenerator>()));
+                                                            std::make_unique<EmptyGenerator>()));
 }
 
 DEF_TEST(ImageDataRef, reporter) {
@@ -821,8 +820,8 @@ DEF_GPUTEST_FOR_GL_RENDERING_CONTEXTS(SkImage_NewFromTextureRelease, reporter, c
                                        kPremul_SkAlphaType);
     GrBackendTexture backendTex;
 
-    if (!create_backend_texture(ctx, &backendTex, ii, SkColors::kRed,
-                                GrMipMapped::kNo, GrRenderable::kNo)) {
+    if (!CreateBackendTexture(ctx, &backendTex, ii, SkColors::kRed, GrMipMapped::kNo,
+                              GrRenderable::kNo)) {
         ERRORF(reporter, "couldn't create backend texture\n");
     }
 
@@ -849,7 +848,7 @@ DEF_GPUTEST_FOR_GL_RENDERING_CONTEXTS(SkImage_NewFromTextureRelease, reporter, c
     refImg.reset(nullptr); // force a release of the image
     REPORTER_ASSERT(reporter, 1 == releaseChecker.fReleaseCount);
 
-    delete_backend_texture(ctx, backendTex);
+    DeleteBackendTexture(ctx, backendTex);
 }
 
 static void test_cross_context_image(skiatest::Reporter* reporter, const GrContextOptions& options,
@@ -968,19 +967,19 @@ static void test_cross_context_image(skiatest::Reporter* reporter, const GrConte
 
             // Any context should be able to borrow the texture at this point
             sk_sp<GrTextureProxy> proxy = as_IB(refImg)->asTextureProxyRef(
-                    ctx, GrSamplerState::ClampNearest(), nullptr);
+                    ctx, GrSamplerState::Filter::kNearest, nullptr);
             REPORTER_ASSERT(reporter, proxy);
 
             // But once it's borrowed, no other context should be able to borrow
             otherTestContext->makeCurrent();
             sk_sp<GrTextureProxy> otherProxy = as_IB(refImg)->asTextureProxyRef(
-                    otherCtx, GrSamplerState::ClampNearest(), nullptr);
+                    otherCtx, GrSamplerState::Filter::kNearest, nullptr);
             REPORTER_ASSERT(reporter, !otherProxy);
 
             // Original context (that's already borrowing) should be okay
             testContext->makeCurrent();
             sk_sp<GrTextureProxy> proxySecondRef = as_IB(refImg)->asTextureProxyRef(
-                    ctx, GrSamplerState::ClampNearest(), nullptr);
+                    ctx, GrSamplerState::Filter::kNearest, nullptr);
             REPORTER_ASSERT(reporter, proxySecondRef);
 
             // Release first ref from the original context
@@ -989,8 +988,8 @@ static void test_cross_context_image(skiatest::Reporter* reporter, const GrConte
             // We released one proxy but not the other from the current borrowing context. Make sure
             // a new context is still not able to borrow the texture.
             otherTestContext->makeCurrent();
-            otherProxy = as_IB(refImg)->asTextureProxyRef(otherCtx, GrSamplerState::ClampNearest(),
-                                                          nullptr);
+            otherProxy = as_IB(refImg)->asTextureProxyRef(
+                    otherCtx, GrSamplerState::Filter::kNearest, nullptr);
             REPORTER_ASSERT(reporter, !otherProxy);
 
             // Release second ref from the original context
@@ -999,8 +998,8 @@ static void test_cross_context_image(skiatest::Reporter* reporter, const GrConte
 
             // Now we should be able to borrow the texture from the other context
             otherTestContext->makeCurrent();
-            otherProxy = as_IB(refImg)->asTextureProxyRef(otherCtx, GrSamplerState::ClampNearest(),
-                                                          nullptr);
+            otherProxy = as_IB(refImg)->asTextureProxyRef(
+                    otherCtx, GrSamplerState::Filter::kNearest, nullptr);
             REPORTER_ASSERT(reporter, otherProxy);
 
             // Release everything
@@ -1041,12 +1040,13 @@ DEF_GPUTEST(SkImage_CrossContextGrayAlphaConfigs, reporter, options) {
             sk_sp<SkImage> image = SkImage::MakeCrossContextFromPixmap(ctx, pixmap, false);
             REPORTER_ASSERT(reporter, image);
 
-            sk_sp<GrTextureProxy> proxy = as_IB(image)->asTextureProxyRef(
-                ctx, GrSamplerState::ClampNearest(), nullptr);
+            sk_sp<GrTextureProxy> proxy =
+                    as_IB(image)->asTextureProxyRef(ctx, GrSamplerState::Filter::kNearest, nullptr);
             REPORTER_ASSERT(reporter, proxy);
 
             bool expectAlpha = kAlpha_8_SkColorType == ct;
-            REPORTER_ASSERT(reporter, expectAlpha == GrPixelConfigIsAlphaOnly(proxy->config()));
+            GrColorType grCT = SkColorTypeToGrColorType(image->colorType());
+            REPORTER_ASSERT(reporter, expectAlpha == GrColorTypeIsAlphaOnly(grCT));
         }
     }
 }
